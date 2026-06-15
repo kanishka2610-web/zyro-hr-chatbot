@@ -1,4 +1,3 @@
-
 import streamlit as st
 import os
 from langchain_groq import ChatGroq
@@ -8,42 +7,51 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 
-# Set page configuration
+# Page Setup
 st.set_page_config(page_title="Zyro Dynamics HR Help Desk", page_icon="🤖")
 st.title("🤖 Zyro Dynamics HR Help Desk")
-st.write("Welcome! Ask me any questions regarding company HR policies, leaves, or benefits.")
 
-# Load secrets from Streamlit environment
+# Load Secrets
 if "GROQ_API_KEY" in st.secrets:
     os.environ["GROQ_API_KEY"] = st.secrets["GROQ_API_KEY"]
     os.environ["LANGCHAIN_API_KEY"] = st.secrets.get("LANGCHAIN_API_KEY", "")
-    os.environ["LANGCHAIN_TRACING_V2"] = st.secrets.get("LANGCHAIN_TRACING_V2", "true")
-    os.environ["LANGCHAIN_PROJECT"] = st.secrets.get("LANGCHAIN_PROJECT", "zyro-rag-challenge")
+    os.environ["LANGCHAIN_TRACING_V2"] = "true"
+    os.environ["LANGCHAIN_PROJECT"] = "zyro-rag-challenge"
 
-# Initialize Chat History
+# Initialize Components (Cached for performance)
+@st.cache_resource
+def load_rag_components():
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    # Note: Ensure your FAISS index is saved in the repo or use the logic from your notebook
+    # This example assumes you have a saved 'faiss_index' folder in your repo
+    vectorstore = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+    llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.1)
+    return retriever, llm
+
+retriever, llm = load_rag_components()
+
+# Chat UI
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Display chat history
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.write(message["content"])
 
-# User input
 if question := st.chat_input("Ask an HR question..."):
+    st.session_state.messages.append({"role": "user", "content": question})
     with st.chat_message("user"):
         st.write(question)
-    st.session_state.messages.append({"role": "user", "content": question})
 
-    # Guardrail hardcoded check for out-of-scope questions
-    q_norm = question.strip().lower()
-    oos_keywords = ["zoho", "freshworks", "salesforce", "acruxcrm", "revenue last year", "financial performance", "apply for a job", "recruitment and hiring", "careers"]
+    # RAG Logic
+    context = retriever.invoke(question)
+    formatted_context = "\n\n".join([doc.page_content for doc in context])
     
-    if any(kw in q_norm for kw in oos_keywords):
-        answer = "I am sorry, but I can only answer questions related to Zyro Dynamics (Acrux Dynamics) internal HR policies, handbook, leave policies, and work-from-home guidelines. The requested information is outside the scope of my knowledge base."
-    else:
-        # Fallback response if vector store isn't locally built on the Streamlit server
-        answer = "I am processing your request. For the complete automated evaluation evaluation benchmark, please refer to the generated submission file in Kaggle."
+    prompt = f"""You are an HR assistant. Answer using this context: {formatted_context}
+    Question: {question}"""
+    
+    answer = llm.invoke(prompt).content
 
     with st.chat_message("assistant"):
         st.write(answer)
